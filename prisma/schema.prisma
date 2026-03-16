@@ -1,0 +1,668 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model Project {
+  id          String       @id @default(uuid())
+  projectNumber String?
+  name        String
+  client      String?
+  amount      Float        @default(0)
+  startingDate DateTime?
+  deadline    DateTime?
+  location    String?
+  locationLink String?     @db.Text
+  status      String       @default("ACTIVE")
+  
+  blankBoqUrl String?
+  idDrawingUrl String?
+  threeDDrawingUrl String?
+  otherAttachmentUrl String?
+  
+  materialsDetailsUrl String?
+  labourDetailsUrl String?
+  productionOrdersUrl String?
+  pricedBoqUrl String?
+  
+  weeklyPlans WeeklyPlan[]
+  // JobCards can now optionally link directly to Project OR through WeeklyPlan
+  // But strict hierarchy implies Project -> WeeklyPlan -> JobCard
+  // For flexibility/backward compat, we might keep Project relation on JobCard too, 
+  // OR we migrate JobCards to be linked via WeeklyPlan. 
+  // The user prompt says: "Project -> WeeklyPlan -> JobCard".
+  // So JobCard belongs to WeeklyPlan.
+  // We will keep JobCard.projectId for easier querying/filtering if needed, or remove it.
+  // Let's keep direct link for now for reporting ease, but enforce WeeklyPlan.
+  jobCards    JobCard[]
+  productionOrders ProductionOrder[]
+  purchaseOrders PurchaseOrder[]
+  materialRequisitions MaterialRequisition[]
+  invoices    Invoice[]
+  storeTransactions StoreTransaction[]
+  projectStocks ProjectStock[]
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @default(now()) @updatedAt
+}
+
+model WeeklyPlan {
+  id        String    @id @default(uuid())
+  projectId String
+  project   Project   @relation(fields: [projectId], references: [id])
+  
+  weekNumber Int      // e.g. 7
+  title      String?  // e.g. "Phase 1: Cutting"
+  status     String   @default("PENDING") // PENDING, IN_PROGRESS, COMPLETED
+  
+  jobCards   JobCard[]
+  
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  
+  tasks      WeeklyTask[]
+
+  @@unique([projectId, weekNumber]) // Prevent duplicate weeks for same project
+}
+
+model WeeklyTask {
+  id           String     @id @default(uuid())
+  weeklyPlanId String
+  weeklyPlan   WeeklyPlan @relation(fields: [weeklyPlanId], references: [id])
+  
+  description  String
+  targetQty    Int
+  unit         String     @default("pcs") 
+  
+  assignedTo   String?
+  startDate    DateTime?
+  endDate      DateTime?
+  status       String     @default("PENDING")
+  
+  sectionId    String?
+  section      Section?   @relation(fields: [sectionId], references: [id])
+  
+  subSectionId String?
+  subSection   SubSection? @relation(fields: [subSectionId], references: [id])
+  
+  jobCards     JobCard[]
+}
+
+model Section {
+  id        String    @id @default(uuid())
+  name      String
+  incharges   User[] @relation("SectionIncharges")
+  foremen     User[] @relation("SectionForemen")
+  subSections SubSection[]
+  machines  Machine[]
+  employees Employee[]
+  jobCards  JobCard[]
+  weeklyTasks WeeklyTask[]
+}
+
+model SubSection {
+  id        String    @id @default(uuid())
+  name      String
+  sectionId String
+  section   Section   @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  
+  machines  Machine[]
+  employees Employee[]
+  weeklyTasks WeeklyTask[]
+  
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
+model MeetingSummary {
+    id        String   @id @default(uuid())
+    title     String
+    date      DateTime
+    attendees String?
+    summary   String   @db.Text
+    source    String   @default("MANUAL") // MANUAL or AUDIO
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
+}
+
+model Machine {
+  id           String    @id @default(uuid())
+  name         String
+  machineNumber String?
+  operatorName String?
+  status       String    @default("IDLE") // IDLE, RUNNING, MAINTENANCE
+  sectionId    String
+  section      Section   @relation(fields: [sectionId], references: [id])
+  subSectionId String?
+  subSection   SubSection? @relation(fields: [subSectionId], references: [id])
+  jobCards     JobCard[]
+  assignedEmployees Employee[]
+  maintenances MachineMaintenance[]
+}
+
+model Employee {
+  id        String    @id @default(uuid())
+  employeeCode String? @unique
+  name      String
+  role      String    // e.g. "Operator", "Helper", "Supervisor"
+  sectionId String
+  section   Section   @relation(fields: [sectionId], references: [id])
+  subSectionId String?
+  subSection   SubSection? @relation(fields: [subSectionId], references: [id])
+  
+  assignedMachineId String?
+  assignedMachine   Machine? @relation(fields: [assignedMachineId], references: [id])
+  
+  username  String    @unique
+  password  String
+  phoneNumber String?
+  
+  // HR Fields
+  joiningDate DateTime?
+  basicSalary Float?
+  status      String    @default("ACTIVE") // ACTIVE, ON_LEAVE, TERMINATED
+  
+  jobCards  JobCard[]
+  logs      WorkLog[]
+  attendances Attendance[]
+  leaveRequests LeaveRequest[]
+  
+  sentMessages     Message[] @relation("SentMessagesEmp")
+  receivedMessages Message[] @relation("ReceivedMessagesEmp")
+  
+  salaryPayments   SalaryPayment[]
+}
+
+model Attendance {
+  id          String   @id @default(uuid())
+  employeeId  String
+  employee    Employee @relation(fields: [employeeId], references: [id])
+  date        DateTime @default(now())
+  checkIn     DateTime?
+  checkOut    DateTime?
+  status      String   @default("PRESENT") // PRESENT, ABSENT, HALF_DAY, LEAVE
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([employeeId, date]) // One attendance record per employee per day
+}
+
+model LeaveRequest {
+  id              String   @id @default(uuid())
+  
+  employeeId      String?
+  employee        Employee? @relation(fields: [employeeId], references: [id])
+  
+  userId          String?
+  user            User?     @relation(fields: [userId], references: [id])
+  
+  startDate       DateTime
+  endDate         DateTime
+  type            String   // SICK, CASUAL, ANNUAL
+  reason          String?  @db.Text
+  status          String   @default("PENDING") // PENDING, APPROVED, REJECTED
+  isPaid          Boolean  @default(false)
+  rejectionReason String?  @db.Text
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model MachineMaintenance {
+  id              String   @id @default(uuid())
+  machineId       String
+  machine         Machine  @relation(fields: [machineId], references: [id])
+  startDate       DateTime
+  endDate         DateTime
+  type            String   // ROUTINE, BREAKDOWN, PERMANENT
+  reason          String?  @db.Text
+  status          String   @default("PENDING") // PENDING, APPROVED, REJECTED
+  rejectionReason String?  @db.Text
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+
+
+model JobCard {
+  id          String      @id @default(uuid())
+  
+  // High-level grouping
+  projectId   String
+  project     Project     @relation(fields: [projectId], references: [id])
+  
+  // Weekly Assignment
+  weeklyPlanId String?
+  weeklyPlan   WeeklyPlan? @relation(fields: [weeklyPlanId], references: [id])
+  
+  weeklyTaskId String?
+  weeklyTask   WeeklyTask? @relation(fields: [weeklyTaskId], references: [id])
+  
+  // Execution Context
+  sectionId   String
+  section     Section     @relation(fields: [sectionId], references: [id])
+  
+  machineId   String?
+  machine     Machine?    @relation(fields: [machineId], references: [id])
+  
+  employeeId  String?
+  employee    Employee?   @relation(fields: [employeeId], references: [id])
+  
+  // MES Tracking Fields
+  day                  DateTime  @default(now())
+  itemCode             String?
+  budgetedLabourHrs    Float     @default(0)
+  budgetedMaterialList String?
+  assignToIncharge     String?
+  unit                 String    @default("pcs")
+  
+  startTime            DateTime?
+  endTime              DateTime?
+  actualHrs            Float     @default(0)
+  remarks              String?
+  assignedTo           String?
+  extraDetails         String?
+
+  description String
+  targetDate  DateTime
+  targetHours Float
+  targetQty   Int         @default(1) // Daily target output
+  actualQty   Int         @default(0) // Actual output
+  
+  startedAt   DateTime?
+  completedAt DateTime?
+  isFinished  Boolean     @default(false)
+  
+  status      String      @default("PENDING")
+  logs        WorkLog[]
+}
+
+model WorkLog {
+  id          String   @id @default(uuid())
+  jobCardId   String
+  jobCard     JobCard  @relation(fields: [jobCardId], references: [id])
+  
+  employeeId  String
+  employee    Employee @relation(fields: [employeeId], references: [id])
+  
+  date        DateTime @default(now())
+  hoursSpent  Float
+  outputQty   Int
+}
+
+model Message {
+  id        String   @id @default(uuid())
+  content   String
+  attachmentUrl String?
+  attachmentType String? // IMAGE, VIDEO, AUDIO, DOCUMENT
+
+  senderType      String   // "ADMIN" | "EMPLOYEE"
+
+  // Relations
+  senderAdminId    String?
+  senderAdmin      User?     @relation("SentMessagesAdmin", fields: [senderAdminId], references: [id])
+  
+  senderEmpId      String?
+  senderEmp        Employee? @relation("SentMessagesEmp", fields: [senderEmpId], references: [id])
+  
+  receiverAdminId  String?
+  receiverAdmin    User?     @relation("ReceivedMessagesAdmin", fields: [receiverAdminId], references: [id])
+  
+  receiverEmpId    String?
+  receiverEmp      Employee? @relation("ReceivedMessagesEmp", fields: [receiverEmpId], references: [id])
+  
+  createdAt DateTime @default(now())
+  read      Boolean  @default(false)
+  readAt    DateTime?
+}
+
+model User {
+  id        String   @id @default(uuid())
+  username  String   @unique
+  password  String
+  name      String?
+  phoneNumber String?
+  address   String?
+  basicSalary Float? @default(0)
+  role      String   @default("ADMIN")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  // Chat Relations
+  sentMessages     Message[] @relation("SentMessagesAdmin")
+  receivedMessages Message[] @relation("ReceivedMessagesAdmin")
+
+  // Procurement Relations
+  materialRequisitions MaterialRequisition[]
+  
+  // HR Relations
+  salaryPayments   SalaryPayment[]
+  leaveRequests    LeaveRequest[]
+  
+  // Factory Settings Relations
+  inchargedSections Section[] @relation("SectionIncharges")
+  foremanSections   Section[] @relation("SectionForemen")
+}
+model SystemSettings {
+  id          String   @id @default("default")
+  factoryName String   @default("Factory Manager")
+  logoUrl     String?
+  faviconUrl  String?
+  resourceLink String?  @default("/uploads/")
+  
+  // Theme Engine
+  primaryColor String  @default("#01cd74")
+  themeMode    String  @default("system")
+  
+  // AI Keys
+  geminiApiKey String?
+  
+  // Kiosk App Controls
+  kioskJobStartEndEnabled Boolean @default(true)
+  
+  // Working Hours (Weekly)
+  workHoursMonday    Float @default(8)
+  workHoursTuesday   Float @default(8)
+  workHoursWednesday Float @default(8)
+  workHoursThursday  Float @default(8)
+  workHoursFriday    Float @default(8)
+  workHoursSaturday  Float @default(8)
+  workHoursSunday    Float @default(0)
+  
+  // HR & Payroll
+  otRatePerHour      Float @default(0)
+  
+  updatedAt   DateTime @updatedAt
+}
+
+model ProductionOrder {
+  id                          String   @id @default(uuid())
+  projectId                   String
+  project                     Project  @relation(fields: [projectId], references: [id])
+  
+  date                        DateTime @default(now())
+  productionOrderNumber       String   @unique
+  
+  // File Attachment Links (Store URLs/paths)
+  autocadDrawingUrl           String?
+  pdfDrawingUrl               String?
+  cuttingListUrl              String?
+  materialListUrl             String?
+  
+  items                       ProductionOrderItem[]
+  
+  // Digital Signatures (Base64 PNGs)
+  productionSignature         String?  @db.LongText
+  qaSignature                 String?  @db.LongText
+  factoryManagerSignature     String?  @db.LongText
+  projectsManagerSignature    String?  @db.LongText
+  
+  createdAt                   DateTime @default(now())
+  updatedAt                   DateTime @updatedAt
+}
+
+model ProductionOrderItem {
+  id                          String   @id @default(uuid())
+  productionOrderId           String
+  productionOrder             ProductionOrder @relation(fields: [productionOrderId], references: [id], onDelete: Cascade)
+  
+  slNo                        String?
+  itemCode                    String?
+  boqRef                      String?
+  itemDescription             String   @db.Text
+  qty                         Float    @default(1)
+  unit                        String   @default("pcs")
+  
+  carpentryLabourHrs          Float    @default(0)
+  polishLabourHrs             Float    @default(0)
+  carpentryMaterialAmount     Float    @default(0)
+  polishMaterialAmount        Float    @default(0)
+  installationTransportAmount Float    @default(0)
+}
+
+model Vendor {
+  id             String          @id @default(uuid())
+  name           String
+  contactPerson  String?
+  email          String?
+  phone          String?
+  address        String?         @db.Text
+  purchaseOrders PurchaseOrder[]
+  quotations     Quotation[]
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+}
+
+model PurchaseOrder {
+  id          String             @id @default(uuid())
+  poNumber    String             @unique
+  date        DateTime           @default(now())
+  
+  vendorId    String
+  vendor      Vendor             @relation(fields: [vendorId], references: [id])
+  
+  projectId   String?
+  project     Project?           @relation(fields: [projectId], references: [id])
+  
+  mrId        String?
+  materialRequisition MaterialRequisition? @relation(fields: [mrId], references: [id])
+  
+  totalAmount Float              @default(0)
+  status          String       @default("DRAFT") // DRAFT, ISSUED, PARTIAL, DELIVERED_FULL, PAID, CANCELLED
+  notes       String?            @db.Text
+  receiptUrl  String?            @db.Text
+  
+  items       PurchaseOrderItem[]
+  
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+
+  @@index([status])
+}
+
+model PurchaseOrderItem {
+  id              String        @id @default(uuid())
+  purchaseOrderId String
+  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  
+  itemCode        String?
+  itemDescription String
+  quantity        Float
+  unit            String        @default("pcs")
+  unitPrice       Float
+  totalPrice      Float
+}
+
+model MaterialRequisition {
+  id          String   @id @default(uuid())
+  mrNumber    String   @unique
+  date        DateTime @default(now())
+  
+  projectId   String?
+  project     Project? @relation(fields: [projectId], references: [id])
+  
+  requesterId String?
+  requester   User? @relation(fields: [requesterId], references: [id])
+  
+  status      String   @default("PENDING") // PENDING, APPROVED, REJECTED, QUOTING, LPO_ISSUED, COMPLETED
+  notes       String?  @db.Text
+  
+  items       MaterialRequisitionItem[]
+  quotations  Quotation[]
+  purchaseOrders PurchaseOrder[]
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([status])
+}
+
+model Invoice {
+  id             String    @id @default(uuid())
+  invoiceNo      String    @unique
+  projectId      String
+  project        Project   @relation(fields: [projectId], references: [id])
+  
+  type           String    // "ADVANCE", "PROGRESS", "FINAL"
+  month          String?   // e.g., "February 2026" for monthly schedules
+  date           DateTime  @default(now())
+  dueDate        DateTime?
+  
+  amount         Float
+  paidAmount     Float     @default(0)
+  status         String    @default("PENDING") // PENDING, PARTIALLY_PAID, PAID
+  
+  notes          String?   @db.Text
+  invoiceFileUrl String?   // Link to uploaded PDF
+  
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+}
+
+model ChartOfAccount {
+  id          String   @id @default(uuid())
+  code        String   @unique
+  name        String
+  category    String   // Asset, Liability, Equity, Revenue, COGS, Expense
+  type        String   // Debit, Credit
+  balance     Float    @default(0)
+  description String?  @db.Text
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  debitTransactions  Transaction[] @relation("DebitAccount")
+  creditTransactions Transaction[] @relation("CreditAccount")
+}
+
+model Transaction {
+  id              String   @id @default(uuid())
+  reference       String   @unique
+  date            DateTime @default(now())
+  description     String
+  amount          Float
+  type            String   // INCOME, EXPENSE, TRANSFER, ASSET_PURCHASE
+  
+  debitAccountId  String
+  debitAccount    ChartOfAccount @relation("DebitAccount", fields: [debitAccountId], references: [id])
+  
+  creditAccountId String
+  creditAccount   ChartOfAccount @relation("CreditAccount", fields: [creditAccountId], references: [id])
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model MaterialRequisitionItem {
+  id                    String              @id @default(uuid())
+  materialRequisitionId String
+  materialRequisition   MaterialRequisition @relation(fields: [materialRequisitionId], references: [id], onDelete: Cascade)
+  
+  itemCode              String?
+  itemDescription       String
+  quantity              Float
+  unit                  String              @default("pcs")
+  
+  approvalStatus        String?             @default("PENDING") // PENDING, APPROVED, REJECTED
+  comments              String?             @db.Text
+  
+  quotationItems        QuotationItem[]
+}
+
+// --- STORE & SUPPLY CHAIN MODELS ---
+
+model StoreItem {
+  id          String             @id @default(uuid())
+  itemCode    String             @unique
+  name        String
+  category    String?
+  unit        String             @default("pcs")
+  currentStock Float             @default(0) // Now represents STRICTLY General Stock
+  
+  transactions StoreTransaction[]
+  projectStocks ProjectStock[]
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  @@index([category])
+}
+
+model StoreTransaction {
+  id          String    @id @default(uuid())
+  storeItemId String
+  storeItem   StoreItem @relation(fields: [storeItemId], references: [id])
+  
+  projectId   String?
+  project     Project?  @relation(fields: [projectId], references: [id])
+  
+  type        String    // "IN", "OUT", "TRANSFER_TO_PROJECT", "TRANSFER_TO_GENERAL"
+  quantity    Float
+  reference   String?   // Store LPO number, MR number, or Project Name here for tracing
+  date        DateTime  @default(now())
+}
+
+model ProjectStock {
+  id          String    @id @default(uuid())
+  storeItemId String
+  storeItem   StoreItem @relation(fields: [storeItemId], references: [id])
+  
+  projectId   String
+  project     Project   @relation(fields: [projectId], references: [id])
+  
+  quantity    Float     @default(0) // Represents ONLY stock specifically locked to this project
+  
+  updatedAt   DateTime  @updatedAt
+  
+  @@unique([storeItemId, projectId])
+}
+
+model Quotation {
+  id          String    @id @default(uuid())
+  vendorId    String
+  vendor      Vendor    @relation(fields: [vendorId], references: [id])
+  mrId        String    
+  materialRequisition MaterialRequisition @relation(fields: [mrId], references: [id])
+  
+  totalAmount Float
+  attachmentUrl String? // Uploaded PDF quote
+  isSelected  Boolean   @default(false)
+  
+  items       QuotationItem[]
+  
+  createdAt   DateTime  @default(now())
+}
+
+model QuotationItem {
+  id                    String              @id @default(uuid())
+  quotationId           String
+  quotation             Quotation           @relation(fields: [quotationId], references: [id], onDelete: Cascade)
+  
+  materialRequisitionItemId String
+  materialRequisitionItem   MaterialRequisitionItem @relation(fields: [materialRequisitionItemId], references: [id])
+  
+  unitPrice             Float
+  totalPrice            Float
+}
+
+// --- HR & PAYROLL PAYMENTS ---
+
+model SalaryPayment {
+  id          String   @id @default(uuid())
+  
+  employeeId  String?
+  employee    Employee? @relation(fields: [employeeId], references: [id])
+  
+  userId      String?
+  user        User?    @relation(fields: [userId], references: [id])
+  
+  amount      Float
+  month       String   // e.g. "February 2026"
+  paymentDate DateTime @default(now())
+  status      String   @default("PAID")
+  
+  @@unique([employeeId, month])
+  @@unique([userId, month])
+}
